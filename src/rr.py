@@ -13,12 +13,20 @@ LR_DECAY_EVERY = 20 if EPOCHS == 50 else 50    # epochs between two LR decays
 LR_DECAY = 1 / 3                               # the LR is divided by 3 at each decay
 
 DATA_DIR = '/storage/slurm/home/68070701616@cpe.kmutt.ac.th/DL-RR/src/data'
-RESULTS_FILE = f'../results/{DATASET}_e{EPOCHS}_b{BATCH_SIZE}_s{IMAGE_SIZE}.csv'
-LOSS_FILE = RESULTS_FILE.replace('.csv', '_loss.csv')
-LOSS_PLOT = RESULTS_FILE.replace('.csv', '_loss.png')
-
+import os
 import sys
 from pathlib import Path
+
+# Everything of one experiment goes to results/<experiment>/, next to src/ (wherever the script is started from)
+EXPERIMENT = f'{DATASET}_e{EPOCHS}_b{BATCH_SIZE}_s{IMAGE_SIZE}'
+RESULTS_DIR = Path(__file__).resolve().parent.parent / 'results' / EXPERIMENT
+CHECKPOINT_DIR = RESULTS_DIR / 'checkpoints'    # progress of the model being trained, saved every epoch
+MODELS_DIR = RESULTS_DIR / 'models'             # finished models
+RESULTS_FILE = RESULTS_DIR / 'results.csv'
+LOSS_FILE = RESULTS_DIR / 'loss.csv'
+LOSS_PLOT = RESULTS_DIR / 'loss.png'
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -31,7 +39,7 @@ from PIL import Image
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# Notebook-defined datasets cannot be sent to worker processes on macOS
+# macOS starts data workers by re-running this whole script, so load the data in the main process there
 NUM_WORKERS = 0 if sys.platform == 'darwin' else 4
 
 print('torch', torch.__version__, '| device:', device)
@@ -181,15 +189,35 @@ def evaluate(model, loader):
     return 100 * top1 / total, 100 * top5 / total
 
 
-def train(model):
-    """Trains the model and returns its training loss at each epoch."""
+def save(data, path):
+    """Saves to a temporary file first, so a job killed while saving never leaves a broken file."""
+    temporary = path.with_suffix('.tmp')
+    torch.save(data, temporary)
+    os.replace(temporary, path)
+
+
+def train(model, checkpoint_file):
+    """Trains the model and returns its training loss at each epoch.
+
+    The progress is saved to checkpoint_file after every epoch. If that file already exists,
+    training continues from the last saved epoch instead of starting again.
+    """
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(trainable, lr=LEARNING_RATE, momentum=MOMENTUM)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=LR_DECAY_EVERY, gamma=LR_DECAY)
     criterion = nn.CrossEntropyLoss()
 
-    epoch_losses = []
-    for epoch in range(1, EPOCHS + 1):
+    start_epoch, epoch_losses = 1, []
+    if checkpoint_file.exists():
+        checkpoint = torch.load(checkpoint_file, map_location=device)
+        model.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
+        start_epoch = checkpoint['epoch'] + 1
+        epoch_losses = checkpoint['losses']
+        print(f'resuming from the checkpoint: epoch {start_epoch}/{EPOCHS}')
+
+    for epoch in range(start_epoch, EPOCHS + 1):
         model.train()
         total_loss = 0
         for images, labels in train_loader:
@@ -205,7 +233,15 @@ def train(model):
         if val_loader is not None:
             val_top1, val_top5 = evaluate(model, val_loader)
             message += f' | val top-1 {val_top1:.2f} | val top-5 {val_top5:.2f}'
-        print(message)
+        print(message, flush=True)
+
+        save({
+            'epoch': epoch,
+            'losses': epoch_losses,
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
+        }, checkpoint_file)
 
     return epoch_losses
 
@@ -217,19 +253,31 @@ for pretrained in PRETRAINED:
         if name == 'SN' and pretrained:
             continue
         run = f'{name} (pretrained)' if pretrained else name
-        print(f'--- {run} ---')
-        model = build_model(name, pretrained).to(device)
-        losses[run] = train(model)
-        top1, top5 = evaluate(model, test_loader)
-        print(f'test top-1 {top1:.2f} | test top-5 {top5:.2f}')
+        file_name = f'{name}_pretrained.pt' if pretrained else f'{name}_scratch.pt'
+        checkpoint_file = CHECKPOINT_DIR / file_name
+        model_file = MODELS_DIR / file_name
+        print(f'--- {run} ---', flush=True)
 
-        results.append({'Model': name, 'Pretrained': pretrained, 'Top-1': top1, 'Top-5': top5})
+        if model_file.exists():
+            print('already trained, skipping')
+            finished = torch.load(model_file, map_location='cpu')
+        else:
+            model = build_model(name, pretrained).to(device)
+            epoch_losses = train(model, checkpoint_file)
+            top1, top5 = evaluate(model, test_loader)
+            finished = {'model': model.state_dict(), 'losses': epoch_losses, 'top1': top1, 'top5': top5}
+            save(finished, model_file)
+            checkpoint_file.unlink()    # the model is finished: its progress file is not needed anymore
+        print(f'test top-1 {finished["top1"]:.2f} | test top-5 {finished["top5"]:.2f}', flush=True)
+
+        losses[run] = finished['losses']
+        results.append({'Model': name, 'Pretrained': pretrained, 'Top-1': finished['top1'], 'Top-5': finished['top5']})
         pd.DataFrame(results).to_csv(RESULTS_FILE, index=False)
         pd.DataFrame(losses, index=pd.RangeIndex(1, EPOCHS + 1, name='Epoch')).to_csv(LOSS_FILE)
 
 table = pd.DataFrame(results).pivot(index='Model', columns='Pretrained', values=['Top-1', 'Top-5'])
 table = table.swaplevel(axis=1).sort_index(axis=1).reindex(MODELS)
-table.round(2)
+print(table.round(2))
 
 loss_table = pd.DataFrame(losses, index=pd.RangeIndex(1, EPOCHS + 1, name='Epoch'))
 compare = len(losses) > 1
@@ -262,4 +310,4 @@ if compare:
 
 fig.tight_layout()
 fig.savefig(LOSS_PLOT, dpi=150)
-plt.show()
+print('results saved to', RESULTS_DIR)
