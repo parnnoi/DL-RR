@@ -244,6 +244,7 @@ for run in loss_table.columns:
     curves_ax.plot(loss_table.index, loss_table[run], style, color=colors[name], label=run)
 curves_ax.set_title(f'Training loss on {DATASET}')
 curves_ax.set_xlabel('Epoch')
+curves_ax.xaxis.get_major_locator().set_params(integer=True)
 curves_ax.set_ylabel('Cross-entropy loss')
 curves_ax.grid(alpha=0.3)
 curves_ax.legend()
@@ -255,10 +256,10 @@ if compare:
     bars_ax.invert_yaxis()    # lowest loss on top
     bars_ax.set_title(f'Training loss at the last epoch ({EPOCHS})')
     bars_ax.set_xlabel('Cross-entropy loss')
+    bars_ax.set_xlim(0, final.max() * 1.15)    # room for the value labels
     for y, value in enumerate(final.values):
         bars_ax.text(value, y, f' {value:.3f}', va='center')
 
 fig.tight_layout()
 fig.savefig(LOSS_PLOT, dpi=150)
 plt.show()
-

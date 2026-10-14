@@ -8,8 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --time=8:00:00
 
-DIRECTORY_VENV_ACTIVATE="$HOME/RR/.venv/bin/activate"
-DIRECTORY_LAB="$HOME/RR/src"
+DIRECTORY_VENV_ACTIVATE="$HOME/DL-RR/.venv/bin/activate"
+DIRECTORY_LAB="$HOME/DL-RR/src"
 
 set -euo pipefail
 
