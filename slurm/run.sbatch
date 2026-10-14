@@ -3,7 +3,6 @@
 #SBATCH --output=logs/RR/%j.log
 #SBATCH --error=logs/RR/%j.err
 #SBATCH --partition=gpu4090
-#SBATCH --nodelist=gpu06
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
 #SBATCH --gres=gpu:1
