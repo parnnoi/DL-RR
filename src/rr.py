@@ -12,7 +12,7 @@ MOMENTUM = 0.9
 LR_DECAY_EVERY = 20 if EPOCHS == 50 else 50    # epochs between two LR decays
 LR_DECAY = 1 / 3                               # the LR is divided by 3 at each decay
 
-DATA_DIR = 'data'
+DATA_DIR = '/storage/slurm/home/68070701616@cpe.kmutt.ac.th/DL-RR/src/data'
 RESULTS_FILE = f'../results/{DATASET}_e{EPOCHS}_b{BATCH_SIZE}_s{IMAGE_SIZE}.csv'
 LOSS_FILE = RESULTS_FILE.replace('.csv', '_loss.csv')
 LOSS_PLOT = RESULTS_FILE.replace('.csv', '_loss.png')
