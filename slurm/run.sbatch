@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
 #SBATCH --gres=gpu:1
-#SBATCH --time=8:00:00
+#SBATCH --time=12:00:00
 
 DIRECTORY_VENV_ACTIVATE="$HOME/DL-RR/.venv/bin/activate"
 DIRECTORY_LAB="$HOME/DL-RR/src"
