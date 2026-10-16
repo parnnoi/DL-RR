@@ -11,14 +11,20 @@ LEARNING_RATE = 0.001
 MOMENTUM = 0.9
 LR_DECAY_EVERY = 20 if EPOCHS == 50 else 50    # epochs between two LR decays
 LR_DECAY = 1 / 3                               # the LR is divided by 3 at each decay
+SEED = 0                                       # same default as the authors' code (Animesion)
 
 DATA_DIR = '/storage/slurm/home/68070701616@cpe.kmutt.ac.th/DL-RR/src/data'
 import os
+import random
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
-# Everything of one experiment goes to results/<experiment>/, next to src/ (wherever the script is started from)
-EXPERIMENT = f'{DATASET}_e{EPOCHS}_b{BATCH_SIZE}_s{IMAGE_SIZE}'
+# Everything of one experiment goes to results/<experiment>/, next to src/ (wherever the script is started from).
+# '_animesion' = models, data split and pre-processing of the authors' code at the time of the paper (Animesion, Jan 2021)
+EXPERIMENT = f'{DATASET}_e{EPOCHS}_b{BATCH_SIZE}_s{IMAGE_SIZE}_animesion'
+SPLITS_DIR = Path(__file__).resolve().parent / 'splits'    # the authors' moeImouto train / test split
 RESULTS_DIR = Path(__file__).resolve().parent.parent / 'results' / EXPERIMENT
 CHECKPOINT_DIR = RESULTS_DIR / 'checkpoints'    # progress of the model being trained, saved every epoch
 MODELS_DIR = RESULTS_DIR / 'models'             # finished models
@@ -29,12 +35,13 @@ CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms
-from torchvision.models.vision_transformer import interpolate_embeddings
+from pytorch_pretrained_vit import ViT
 from PIL import Image
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -42,19 +49,64 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # macOS starts data workers by re-running this whole script, so load the data in the main process there
 NUM_WORKERS = 0 if sys.platform == 'darwin' else 4
 
-print('torch', torch.__version__, '| device:', device)
+
+def log(message=''):
+    """Prints the message with the current time, straight to the Slurm log."""
+    print(f'[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}', flush=True)
+
+
+def duration(seconds):
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f'{hours}h {minutes:02d}m {seconds:02d}s'
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def get_rng_state():
+    """The state of every random generator, saved in the checkpoints so a resumed run continues the same random sequence."""
+    return {
+        'python': random.getstate(),
+        'numpy': np.random.get_state(),
+        'torch': torch.get_rng_state(),
+        'cuda': torch.cuda.get_rng_state_all(),
+    }
+
+
+def set_rng_state(state):
+    random.setstate(state['python'])
+    np.random.set_state(state['numpy'])
+    torch.set_rng_state(state['torch'].cpu())
+    if torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([s.cpu() for s in state['cuda']])
+
+
+START_TIME = time.time()
+set_seed(SEED)
+
+log('=' * 70)
+log(f'START experiment {EXPERIMENT}')
+log(f'dataset {DATASET} | epochs {EPOCHS} | batch size {BATCH_SIZE} | image size {IMAGE_SIZE} | seed {SEED}')
+gpu = f' ({torch.cuda.get_device_name(0)})' if device == 'cuda' else ' (no GPU found: training will be very slow)'
+log(f'torch {torch.__version__} | device {device}{gpu}')
+log(f'results folder: {RESULTS_DIR}')
+log('loading the data ...')
 
 def load_moeimouto():
-    train, test = [], []
-    folders = sorted(f for f in Path(DATA_DIR, 'moeimouto-faces').iterdir() if f.is_dir())
-    for label, folder in enumerate(folders):
-        files = sorted(f for f in folder.glob('*.png') if not f.name.startswith('._'))
-        files = [f for f in files if Image.open(f).mode == 'RGB']
-        n_train = int(0.8 * len(files))
-        train += [(f, label) for f in files[:n_train]]
-        test += [(f, label) for f in files[n_train:]]
-    columns = ['path', 'label']
-    return pd.DataFrame(train, columns=columns), None, pd.DataFrame(test, columns=columns)
+    """The authors' split files: 0.8 / 0.2 random split, the 2 non-RGB images already removed."""
+    root = Path(DATA_DIR, 'moeimouto-faces')
+
+    def read(name):
+        df = pd.read_csv(SPLITS_DIR / 'moeImouto' / name, names=['label', 'path'])
+        df['path'] = [root / p for p in df['path']]
+        return df
+
+    return read('train.csv'), None, read('test.csv')
 
 
 def load_dafre():
@@ -73,24 +125,29 @@ def load_dafre():
 train_df, val_df, test_df = load_moeimouto() if DATASET == 'moeImouto' else load_dafre()
 NUM_CLASSES = train_df['label'].nunique()
 
-print('classes:', NUM_CLASSES)
-print('train:', len(train_df), '| val:', 0 if val_df is None else len(val_df), '| test:', len(test_df))
+log(f'data loaded: {NUM_CLASSES} classes | train {len(train_df)} | val {0 if val_df is None else len(val_df)} | test {len(test_df)}')
 
-normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+def make_transforms(name):
+    """Pre-processing of the authors' code. Not in the paper: the color jitter, and the ImageNet normalization for ResNets."""
+    if name in RESNETS:
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    else:
+        normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 
-train_transform = transforms.Compose([
-    transforms.Resize((IMAGE_SIZE + 32, IMAGE_SIZE + 32)),
-    transforms.RandomCrop(IMAGE_SIZE),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-    normalize,
-])
-
-test_transform = transforms.Compose([
-    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-    transforms.ToTensor(),
-    normalize,
-])
+    train_transform = transforms.Compose([
+        transforms.Resize((IMAGE_SIZE + 32, IMAGE_SIZE + 32)),
+        transforms.RandomCrop(IMAGE_SIZE),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+        transforms.ToTensor(),
+        normalize,
+    ])
+    test_transform = transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        normalize,
+    ])
+    return train_transform, test_transform
 
 
 class FaceDataset(Dataset):
@@ -107,27 +164,30 @@ class FaceDataset(Dataset):
         return self.transform(image), self.labels[i]
 
 
-def make_loader(df, transform, shuffle):
-    return DataLoader(FaceDataset(df, transform), batch_size=BATCH_SIZE, shuffle=shuffle, num_workers=NUM_WORKERS)
+def make_loaders(name):
+    """Returns the train, val (None for moeImouto) and test loaders, with the pre-processing of this model."""
+    train_transform, test_transform = make_transforms(name)
 
+    def loader(df, transform, shuffle):
+        return DataLoader(FaceDataset(df, transform), batch_size=BATCH_SIZE, shuffle=shuffle, num_workers=NUM_WORKERS)
 
-train_loader = make_loader(train_df, train_transform, shuffle=True)
-val_loader = None if val_df is None else make_loader(val_df, test_transform, shuffle=False)
-test_loader = make_loader(test_df, test_transform, shuffle=False)
+    val_loader = None if val_df is None else loader(val_df, test_transform, shuffle=False)
+    return loader(train_df, train_transform, True), val_loader, loader(test_df, test_transform, False)
 
 class ShallowNet(nn.Module):
+    """The authors' 5-layer CNN: 2 conv blocks and 2 fully-connected layers."""
+
     def __init__(self, num_classes):
         super().__init__()
         size = ((IMAGE_SIZE - 4) // 2 - 4) // 2    # feature map size after the two conv + pool blocks
         self.features = nn.Sequential(
-            nn.Conv2d(3, 6, 5), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(6, 16, 5), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(3, 16, 5), nn.BatchNorm2d(16), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, 5), nn.BatchNorm2d(32), nn.ReLU(), nn.MaxPool2d(2),
         )
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(16 * size * size, 120), nn.ReLU(),
-            nn.Linear(120, 84), nn.ReLU(),
-            nn.Linear(84, num_classes),
+            nn.Linear(32 * size * size, 512), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(512, num_classes),
         )
 
     def forward(self, x):
@@ -139,13 +199,8 @@ RESNETS = {
     'R-152': (models.resnet152, models.ResNet152_Weights.IMAGENET1K_V1),
 }
 
-# name: (builder, pretrained weights, patch size)
-VITS = {
-    'B-16': (models.vit_b_16, models.ViT_B_16_Weights.IMAGENET1K_V1, 16),
-    'B-32': (models.vit_b_32, models.ViT_B_32_Weights.IMAGENET1K_V1, 32),
-    'L-16': (models.vit_l_16, models.ViT_L_16_Weights.IMAGENET1K_V1, 16),
-    'L-32': (models.vit_l_32, models.ViT_L_32_Weights.IMAGENET1K_V1, 32),
-}
+# The authors' ViT (dropout 0.1). Pretrained = Google's ImageNet-21k weights, downloaded and converted on first use.
+VITS = {'B-16': 'B_16', 'B-32': 'B_32', 'L-16': 'L_16', 'L-32': 'L_32'}
 
 
 def build_resnet(name, pretrained):
@@ -154,19 +209,20 @@ def build_resnet(name, pretrained):
     if pretrained:
         for parameter in model.parameters():
             parameter.requires_grad = False
+    else:
+        # Same initialization as the authors' code
+        for module in model.modules():
+            if isinstance(module, (nn.Conv2d, nn.Linear)):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.normal_(module.bias, std=1e-6)
     model.fc = nn.Linear(model.fc.in_features, NUM_CLASSES)
     return model
 
 
 def build_vit(name, pretrained):
-    builder, weights, patch_size = VITS[name]
-    model = builder(image_size=IMAGE_SIZE)
-    if pretrained:
-        # The weights were trained on 224x224 images: resize the position embeddings to IMAGE_SIZE
-        state = interpolate_embeddings(IMAGE_SIZE, patch_size, weights.get_state_dict(progress=True))
-        model.load_state_dict(state)
-    model.heads = nn.Linear(model.hidden_dim, NUM_CLASSES)
-    return model
+    # The library resizes the position embeddings to IMAGE_SIZE and drops the 21k-class head by itself
+    return ViT(VITS[name], pretrained=pretrained, image_size=IMAGE_SIZE, num_classes=NUM_CLASSES)
 
 
 def build_model(name, pretrained):
@@ -196,7 +252,7 @@ def save(data, path):
     os.replace(temporary, path)
 
 
-def train(model, checkpoint_file):
+def train(model, checkpoint_file, train_loader, val_loader):
     """Trains the model and returns its training loss at each epoch.
 
     The progress is saved to checkpoint_file after every epoch. If that file already exists,
@@ -213,11 +269,17 @@ def train(model, checkpoint_file):
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
+        if 'rng' in checkpoint:    # checkpoints made before the seed was added do not have it
+            set_rng_state(checkpoint['rng'])
         start_epoch = checkpoint['epoch'] + 1
         epoch_losses = checkpoint['losses']
-        print(f'resuming from the checkpoint: epoch {start_epoch}/{EPOCHS}')
+        log(f'RESUME from the checkpoint: continuing at epoch {start_epoch}/{EPOCHS}')
+    else:
+        log(f'START training from epoch 1/{EPOCHS}')
 
+    train_start = time.time()
     for epoch in range(start_epoch, EPOCHS + 1):
+        epoch_start = time.time()
         model.train()
         total_loss = 0
         for images, labels in train_loader:
@@ -233,7 +295,6 @@ def train(model, checkpoint_file):
         if val_loader is not None:
             val_top1, val_top5 = evaluate(model, val_loader)
             message += f' | val top-1 {val_top1:.2f} | val top-5 {val_top5:.2f}'
-        print(message, flush=True)
 
         save({
             'epoch': epoch,
@@ -241,43 +302,67 @@ def train(model, checkpoint_file):
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scheduler': scheduler.state_dict(),
+            'rng': get_rng_state(),
         }, checkpoint_file)
 
+        time_per_epoch = (time.time() - train_start) / (epoch - start_epoch + 1)
+        message += f' | {duration(time.time() - epoch_start)} | model left {duration(time_per_epoch * (EPOCHS - epoch))}'
+        log(message + ' | checkpoint saved')
+
+    log(f'training finished in {duration(time.time() - train_start)} (this job)')
     return epoch_losses
+
+runs = [(name, pretrained) for pretrained in PRETRAINED for name in MODELS if not (name == 'SN' and pretrained)]
+
+
+def file_name(name, pretrained):
+    return f'{name}_pretrained.pt' if pretrained else f'{name}_scratch.pt'
+
+
+# Overview of what is already done, so a re-run shows where it picks up
+done = [run for run in runs if (MODELS_DIR / file_name(*run)).exists()]
+in_progress = [run for run in runs if (CHECKPOINT_DIR / file_name(*run)).exists()]
+log(f'{len(runs)} models to train: {len(done)} finished, {len(in_progress)} in progress, '
+    f'{len(runs) - len(done) - len(in_progress)} not started')
 
 results = []
 losses = {}    # run name -> training loss at each epoch
 
-for pretrained in PRETRAINED:
-    for name in MODELS:
-        if name == 'SN' and pretrained:
-            continue
-        run = f'{name} (pretrained)' if pretrained else name
-        file_name = f'{name}_pretrained.pt' if pretrained else f'{name}_scratch.pt'
-        checkpoint_file = CHECKPOINT_DIR / file_name
-        model_file = MODELS_DIR / file_name
-        print(f'--- {run} ---', flush=True)
+for i, (name, pretrained) in enumerate(runs, 1):
+    run = f'{name} (pretrained)' if pretrained else name
+    checkpoint_file = CHECKPOINT_DIR / file_name(name, pretrained)
+    model_file = MODELS_DIR / file_name(name, pretrained)
+    log('-' * 70)
+    log(f'[{i}/{len(runs)}] {run}')
 
-        if model_file.exists():
-            print('already trained, skipping')
-            finished = torch.load(model_file, map_location='cpu')
-        else:
-            model = build_model(name, pretrained).to(device)
-            epoch_losses = train(model, checkpoint_file)
-            top1, top5 = evaluate(model, test_loader)
-            finished = {'model': model.state_dict(), 'losses': epoch_losses, 'top1': top1, 'top5': top5}
-            save(finished, model_file)
-            checkpoint_file.unlink()    # the model is finished: its progress file is not needed anymore
-        print(f'test top-1 {finished["top1"]:.2f} | test top-5 {finished["top5"]:.2f}', flush=True)
+    if model_file.exists():
+        finished = torch.load(model_file, map_location='cpu')
+        log(f'already finished, skipping (test top-1 {finished["top1"]:.2f} | test top-5 {finished["top5"]:.2f})')
+    else:
+        set_seed(SEED)    # every model starts from the same seed, whatever ran before it
+        log('building the model' + (' with its ImageNet weights' if pretrained else ''))
+        model = build_model(name, pretrained).to(device)
+        train_loader, val_loader, test_loader = make_loaders(name)
+        epoch_losses = train(model, checkpoint_file, train_loader, val_loader)
 
-        losses[run] = finished['losses']
-        results.append({'Model': name, 'Pretrained': pretrained, 'Top-1': finished['top1'], 'Top-5': finished['top5']})
-        pd.DataFrame(results).to_csv(RESULTS_FILE, index=False)
-        pd.DataFrame(losses, index=pd.RangeIndex(1, EPOCHS + 1, name='Epoch')).to_csv(LOSS_FILE)
+        log('testing ...')
+        top1, top5 = evaluate(model, test_loader)
+        finished = {'model': model.state_dict(), 'losses': epoch_losses, 'top1': top1, 'top5': top5}
+        save(finished, model_file)
+        checkpoint_file.unlink()    # the model is finished: its progress file is not needed anymore
+        log(f'FINISHED {run}: test top-1 {top1:.2f} | test top-5 {top5:.2f}')
+        log(f'model saved to {model_file} | checkpoint deleted')
 
+    losses[run] = finished['losses']
+    results.append({'Model': name, 'Pretrained': pretrained, 'Top-1': finished['top1'], 'Top-5': finished['top5']})
+    pd.DataFrame(results).to_csv(RESULTS_FILE, index=False)
+    pd.DataFrame(losses, index=pd.RangeIndex(1, EPOCHS + 1, name='Epoch')).to_csv(LOSS_FILE)
+
+log('-' * 70)
+log('ALL MODELS FINISHED. Test accuracy (%):')
 table = pd.DataFrame(results).pivot(index='Model', columns='Pretrained', values=['Top-1', 'Top-5'])
 table = table.swaplevel(axis=1).sort_index(axis=1).reindex(MODELS)
-print(table.round(2))
+print(table.round(2), flush=True)
 
 loss_table = pd.DataFrame(losses, index=pd.RangeIndex(1, EPOCHS + 1, name='Epoch'))
 compare = len(losses) > 1
@@ -310,4 +395,5 @@ if compare:
 
 fig.tight_layout()
 fig.savefig(LOSS_PLOT, dpi=150)
-print('results saved to', RESULTS_DIR)
+log(f'saved {RESULTS_FILE.name}, {LOSS_FILE.name} and {LOSS_PLOT.name} to {RESULTS_DIR}')
+log(f'DONE in {duration(time.time() - START_TIME)} (this job)')

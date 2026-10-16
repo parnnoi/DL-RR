@@ -652,6 +652,14 @@ wheels = [
 ]
 
 [[package]]
+name = "pytorch-pretrained-vit"
+version = "0.0.7"
+source = { git = "https://github.com/arkel23/PyTorch-Pretrained-ViT?rev=e0405c1e861f7913f9c88630d4f081162aeeee31#e0405c1e861f7913f9c88630d4f081162aeeee31" }
+dependencies = [
+    { name = "torch" },
+]
+
+[[package]]
 name = "pytz"
 version = "2026.5"
 source = { registry = "https://pypi.org/simple" }
@@ -732,6 +740,9 @@ dependencies = [
     { name = "pandas", version = "1.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "pillow", version = "8.0.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "pillow", version = "8.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "pytorch-pretrained-vit" },
+    { name = "scipy", version = "1.5.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "scipy", version = "1.7.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "torch" },
     { name = "torchvision" },
 ]
@@ -751,12 +762,50 @@ requires-dist = [
     { name = "pandas", marker = "sys_platform == 'linux'", specifier = "==1.1.3" },
     { name = "pillow", marker = "sys_platform == 'darwin'", specifier = "==8.4.0" },
     { name = "pillow", marker = "sys_platform == 'linux'", specifier = "==8.0.1" },
+    { name = "pytorch-pretrained-vit", git = "https://github.com/arkel23/PyTorch-Pretrained-ViT?rev=e0405c1e861f7913f9c88630d4f081162aeeee31" },
+    { name = "scipy", marker = "sys_platform == 'darwin'", specifier = "==1.7.3" },
+    { name = "scipy", marker = "sys_platform == 'linux'", specifier = "==1.5.2" },
     { name = "torch", specifier = "==1.13.1" },
     { name = "torchvision", specifier = "==0.14.1" },
 ]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ipykernel" }]
+
+[[package]]
+name = "scipy"
+version = "1.5.2"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "numpy", version = "1.19.2", source = { registry = "https://pypi.org/simple" } },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/53/10/776750d57ade26522478a92a2e14035868624a6a62f4157b0cc5abd4a980/scipy-1.5.2.tar.gz", hash = "sha256:066c513d90eb3fd7567a9e150828d39111ebd88d3e924cdfc9f8ce19ab6f90c9", size = 25423944, upload-time = "2020-07-24T02:00:02.926Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/51/ce/5cf3f909b85f1a1868ca07af925ac5383896cf50afb90b59ba03e9c07b57/scipy-1.5.2-cp38-cp38-manylinux1_i686.whl", hash = "sha256:a785409c0fa51764766840185a34f96a0a93527a0ff0230484d33a8ed085c8f8", size = 22732047, upload-time = "2020-07-24T01:56:41.217Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/be/8625045311a3ed58af5f7ca8a51f20b1bbf72e288d34b48cc81cca550166/scipy-1.5.2-cp38-cp38-manylinux1_x86_64.whl", hash = "sha256:0a0e9a4e58a4734c2eba917f834b25b7e3b6dc333901ce7784fd31aefbd37b2f", size = 25741690, upload-time = "2020-07-24T01:57:20.909Z" },
+]
+
+[[package]]
+name = "scipy"
+version = "1.7.3"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine != 'aarch64' and platform_machine != 'arm64' and sys_platform == 'darwin'",
+    "platform_machine == 'aarch64' and sys_platform == 'darwin'",
+    "platform_machine == 'arm64' and sys_platform == 'darwin'",
+]
+dependencies = [
+    { name = "numpy", version = "1.21.0", source = { registry = "https://pypi.org/simple" } },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/61/67/1a654b96309c991762ee9bc39c363fc618076b155fe52d295211cf2536c7/scipy-1.7.3.tar.gz", hash = "sha256:ab5875facfdef77e0a47d5fd39ea178b58e60e454a4c85aa1e52fcb80db7babf", size = 36102562, upload-time = "2021-11-24T16:14:11.065Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/f3/d22f545d7b760b73b70c965117be26aac07820f35e58978c80d4943b708c/scipy-1.7.3-1-cp38-cp38-macosx_12_0_arm64.whl", hash = "sha256:b0e0aeb061a1d7dcd2ed59ea57ee56c9b23dd60100825f98238c06ee5cc4467e", size = 26922238, upload-time = "2021-11-29T02:34:37.475Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/87/97375b35bdeb839487575f5eadac107fdfdcdaede6de139042657e1cfd44/scipy-1.7.3-cp38-cp38-macosx_10_9_x86_64.whl", hash = "sha256:65bd52bf55f9a1071398557394203d881384d27b9c2cad7df9a027170aeaef93", size = 33022666, upload-time = "2021-11-24T16:08:32.308Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/c8/1fdbdd0ef6712eddca6911f5130c3eb4fc58912e48bea53014b94033b48f/scipy-1.7.3-cp38-cp38-macosx_12_0_arm64.whl", hash = "sha256:f99d206db1f1ae735a8192ab93bd6028f3a42f6fa08467d37a14eb96c9dd34a3", size = 26920936, upload-time = "2021-11-24T16:08:36.223Z" },
+]
 
 [[package]]
 name = "setuptools"
